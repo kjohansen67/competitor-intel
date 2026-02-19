@@ -10,7 +10,8 @@
  *   - div.stock > span:nth-child(2) (stock number)
  *   - div.specs-first > div (spec key/value pairs)
  *
- * Pagination: ?page=N with 25 items per page.
+ * Loads via infinite scroll (25 items per batch).
+ * The ?page=N URL parameter is ignored by these sites.
  */
 
 import type { Page } from 'playwright'
@@ -19,151 +20,156 @@ import { BaseScraper } from './base-scraper.js'
 
 export abstract class DealerSpikeScraper extends BaseScraper {
   abstract inventoryPath: string
-  protected perPage = 25
 
   async scrapeInventory(page: Page): Promise<RawInventoryItem[]> {
-    const items: RawInventoryItem[] = []
-    let currentPage = 1
-    let emptyPages = 0
+    const url = `${this.baseUrl}${this.inventoryPath}`
+    console.log(`[${this.name}] Navigating to ${url}`)
 
-    console.log(`[${this.name}] Scraping inventory via Playwright...`)
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 })
+    await page.waitForTimeout(3000)
 
-    while (true) {
-      const url = `${this.baseUrl}${this.inventoryPath}?page=${currentPage}`
-      console.log(`[${this.name}] Page ${currentPage}: ${url}`)
+    // Scroll to bottom repeatedly to load all items via infinite scroll
+    let prevCount = 0
+    let stableRounds = 0
+    const maxScrolls = 100 // safety cap
 
-      await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 })
-      await page.waitForTimeout(3000)
+    for (let i = 0; i < maxScrolls; i++) {
+      const currentCount = await page.locator('.item-info').count()
 
-      // Count items on this page
-      const itemCount = await page.locator('.item-info').count()
-
-      if (itemCount === 0) {
-        emptyPages++
-        if (emptyPages >= 2) break
-        currentPage++
-        continue
+      if (currentCount === prevCount) {
+        stableRounds++
+        if (stableRounds >= 3) {
+          console.log(`[${this.name}] No new items after 3 scrolls — all ${currentCount} loaded`)
+          break
+        }
+      } else {
+        stableRounds = 0
+        if (i % 3 === 0 || currentCount !== prevCount) {
+          console.log(`[${this.name}] Scroll ${i + 1}: ${currentCount} items loaded`)
+        }
       }
 
-      emptyPages = 0
-
-      // Extract all items from this page
-      const pageItems = await page.evaluate(`
-        (function() {
-          var cards = document.querySelectorAll('.item-info');
-          var results = [];
-
-          for (var i = 0; i < cards.length; i++) {
-            var card = cards[i];
-
-            // Title: span.prefix (condition) + span.label
-            var prefix = card.querySelector('.title .prefix');
-            var label = card.querySelector('.title .label');
-            var condition = prefix ? prefix.textContent.trim() : '';
-            var fullTitle = label ? label.textContent.trim() : '';
-
-            // Price
-            var priceEl = card.querySelector('.price span');
-            var priceText = priceEl ? priceEl.textContent.trim() : '';
-
-            // MSRP
-            var msrpEl = card.querySelector('.msrp span');
-            var msrpText = msrpEl ? msrpEl.textContent.trim() : '';
-
-            // Stock number
-            var stockSpans = card.querySelectorAll('.stock span');
-            var stockNum = stockSpans.length >= 2 ? stockSpans[1].textContent.trim() : '';
-
-            // Specs (key-value pairs in div.specs-first > div)
-            var specs = {};
-            var specDivs = card.querySelectorAll('.specs-first > div');
-            for (var j = 0; j < specDivs.length; j++) {
-              var spans = specDivs[j].querySelectorAll('span');
-              if (spans.length >= 2) {
-                var key = spans[0].textContent.trim().toLowerCase();
-                var val = spans[1].textContent.trim();
-                specs[key] = val;
-              }
-            }
-
-            // Banners (sale, sold, etc)
-            var banners = [];
-            var bannerEls = card.querySelectorAll('.banners .banner');
-            for (var k = 0; k < bannerEls.length; k++) {
-              banners.push(bannerEls[k].textContent.trim().toLowerCase());
-            }
-
-            // Detail URL from view-details button's parent link, or from the card's link
-            var detailLink = card.closest('a') || card.querySelector('a[href]');
-            var detailUrl = detailLink ? detailLink.getAttribute('href') : '';
-
-            results.push({
-              condition: condition,
-              title: fullTitle,
-              price: priceText,
-              msrp: msrpText,
-              stockNumber: stockNum,
-              specs: specs,
-              banners: banners,
-              url: detailUrl,
-            });
-          }
-
-          return JSON.stringify(results);
-        })()
-      `) as string
-
-      const parsed = JSON.parse(pageItems) as Array<{
-        condition: string
-        title: string
-        price: string
-        msrp: string
-        stockNumber: string
-        specs: Record<string, string>
-        banners: string[]
-        url: string
-      }>
-
-      for (const listing of parsed) {
-        if (!listing.stockNumber) continue
-
-        // Skip sold items
-        if (listing.banners.includes('sold')) continue
-
-        const titleParts = this.parseListingTitle(listing.title)
-
-        items.push({
-          stock_number: listing.stockNumber,
-          title: `${listing.condition} ${listing.title}`.trim(),
-          make: titleParts.make,
-          model: titleParts.model,
-          type: titleParts.type,
-          price: listing.price,
-          condition: listing.condition || undefined,
-          floor_length: listing.specs['floor length'] || undefined,
-          gvwr: listing.specs['gvwr'] || undefined,
-          color: listing.specs['color'] || undefined,
-          pull_type: listing.specs['pull type'] || undefined,
-          size: listing.specs['width']
-            ? `${listing.specs['width']}x${listing.specs['floor length'] || ''}`
-            : undefined,
-          url: listing.url
-            ? (listing.url.startsWith('http') ? listing.url : `${this.baseUrl}${listing.url}`)
-            : undefined,
-          year: titleParts.year,
-        })
-      }
-
-      console.log(`[${this.name}] Page ${currentPage}: ${parsed.length} items (${items.length} total)`)
-
-      // If fewer than expected, we might be on the last page
-      if (parsed.length < this.perPage) break
-
-      currentPage++
-      await this.delay(2000, 4000)
+      prevCount = currentCount
+      await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+      await page.waitForTimeout(2000)
     }
 
-    console.log(`[${this.name}] Total scraped: ${items.length} items from ${currentPage} pages`)
+    const totalCards = await page.locator('.item-info').count()
+    console.log(`[${this.name}] Extracting data from ${totalCards} cards...`)
+
+    // Extract all items from the fully loaded page
+    const pageItems = await page.evaluate(`
+      (function() {
+        var cards = document.querySelectorAll('.item-info');
+        var results = [];
+
+        for (var i = 0; i < cards.length; i++) {
+          var card = cards[i];
+
+          // Title: span.prefix (condition) + span.label
+          var prefix = card.querySelector('.title .prefix');
+          var label = card.querySelector('.title .label');
+          var condition = prefix ? prefix.textContent.trim() : '';
+          var fullTitle = label ? label.textContent.trim() : '';
+
+          // Price
+          var priceEl = card.querySelector('.price span');
+          var priceText = priceEl ? priceEl.textContent.trim() : '';
+
+          // MSRP
+          var msrpEl = card.querySelector('.msrp span');
+          var msrpText = msrpEl ? msrpEl.textContent.trim() : '';
+
+          // Stock number
+          var stockSpans = card.querySelectorAll('.stock span');
+          var stockNum = stockSpans.length >= 2 ? stockSpans[1].textContent.trim() : '';
+
+          // Specs (key-value pairs in div.specs-first > div)
+          var specs = {};
+          var specDivs = card.querySelectorAll('.specs-first > div');
+          for (var j = 0; j < specDivs.length; j++) {
+            var spans = specDivs[j].querySelectorAll('span');
+            if (spans.length >= 2) {
+              var key = spans[0].textContent.trim().toLowerCase();
+              var val = spans[1].textContent.trim();
+              specs[key] = val;
+            }
+          }
+
+          // Banners (sale, sold, etc)
+          var banners = [];
+          var bannerEls = card.querySelectorAll('.banners .banner');
+          for (var k = 0; k < bannerEls.length; k++) {
+            banners.push(bannerEls[k].textContent.trim().toLowerCase());
+          }
+
+          // Detail URL from view-details button's parent link, or from the card's link
+          var detailLink = card.closest('a') || card.querySelector('a[href]');
+          var detailUrl = detailLink ? detailLink.getAttribute('href') : '';
+
+          results.push({
+            condition: condition,
+            title: fullTitle,
+            price: priceText,
+            msrp: msrpText,
+            stockNumber: stockNum,
+            specs: specs,
+            banners: banners,
+            url: detailUrl,
+          });
+        }
+
+        return JSON.stringify(results);
+      })()
+    `) as string
+
+    const parsed = JSON.parse(pageItems) as Array<{
+      condition: string
+      title: string
+      price: string
+      msrp: string
+      stockNumber: string
+      specs: Record<string, string>
+      banners: string[]
+      url: string
+    }>
+
+    const items: RawInventoryItem[] = []
+    const seenStocks = new Set<string>()
+
+    for (const listing of parsed) {
+      if (!listing.stockNumber) continue
+      if (seenStocks.has(listing.stockNumber)) continue
+      seenStocks.add(listing.stockNumber)
+
+      // Skip sold items
+      if (listing.banners.includes('sold')) continue
+
+      const titleParts = this.parseListingTitle(listing.title)
+
+      items.push({
+        stock_number: listing.stockNumber,
+        title: `${listing.condition} ${listing.title}`.trim(),
+        make: titleParts.make,
+        model: titleParts.model,
+        type: titleParts.type,
+        price: listing.price,
+        condition: listing.condition || undefined,
+        floor_length: listing.specs['floor length'] || undefined,
+        gvwr: listing.specs['gvwr'] || undefined,
+        color: listing.specs['color'] || undefined,
+        pull_type: listing.specs['pull type'] || undefined,
+        size: listing.specs['width']
+          ? `${listing.specs['width']}x${listing.specs['floor length'] || ''}`
+          : undefined,
+        url: listing.url
+          ? (listing.url.startsWith('http') ? listing.url : `${this.baseUrl}${listing.url}`)
+          : undefined,
+        year: titleParts.year,
+      })
+    }
+
+    console.log(`[${this.name}] Total scraped: ${items.length} unique items`)
     return items
   }
 

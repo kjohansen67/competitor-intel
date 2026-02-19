@@ -1,0 +1,12 @@
+{
+  "slug": "nctrailers",
+  "name": "NC Trailers",
+  "platform": "woocommerce",
+  "baseUrl": "https://www.nctrailers.com",
+  "inventoryPath": "/trailer-inventory/",
+  "expectedMin": 700,
+  "platformConfig": {
+    "perPage": 100,
+    "apiPath": "/wp-json/wc/store/v1/products"
+  }
+}

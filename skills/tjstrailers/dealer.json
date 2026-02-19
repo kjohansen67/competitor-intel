@@ -1,0 +1,12 @@
+{
+  "slug": "tjstrailers",
+  "name": "TJ's Trailers",
+  "platform": "dealsector",
+  "baseUrl": "https://tjstrailers.com",
+  "inventoryPath": "/inventory/",
+  "expectedMin": 230,
+  "platformConfig": {
+    "templateId": "143",
+    "limit": 1000
+  }
+}

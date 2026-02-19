@@ -2,7 +2,16 @@
  * TJ's Trailers scraper — tjstrailers.com
  *
  * Uses WordPress + Elementor + DealSector inventory plugin.
- * 252 records, 10 per page, "Load More" AJAX pagination.
+ * ~252 records, loaded via admin-ajax.php POST requests.
+ *
+ * Instead of clicking the "Load More" button (which DealSector hides/shows
+ * unpredictably), we call the AJAX endpoint directly with increasing offsets
+ * and inject the HTML responses into the DOM for extraction.
+ *
+ * DealSector AJAX endpoint:
+ *   POST /wp-admin/admin-ajax.php
+ *   action=dealsector_filter_inventorys&version=v2&product_type=1
+ *   limit=50&start=0&template_id=143
  *
  * HTML structure per listing:
  *   - a[href*="view-detail-page"] → title + detail URL
@@ -29,7 +38,7 @@ export class TjsTrailersScraper extends BaseScraper {
     })
     await page.waitForTimeout(3000)
 
-    // Get total record count
+    // Get total record count from the page
     const totalText = await page.evaluate(`
       (function() {
         var el = document.getElementById('record_total');
@@ -39,108 +48,149 @@ export class TjsTrailersScraper extends BaseScraper {
     const totalRecords = parseInt(totalText, 10) || 0
     console.log(`[${this.name}] Total records: ${totalRecords}`)
 
-    // Click "Load More" until all items are loaded
-    let loadMoreClicks = 0
-    const maxClicks = Math.ceil(totalRecords / 10) + 5 // Safety margin
+    // Fetch ALL inventory via DealSector's admin-ajax.php endpoint directly,
+    // parsing each response's HTML with DOMParser (avoids DealSector's live JS
+    // removing injected content from the page DOM).
+    const batchSize = 50
+    const allItems: Array<{
+      title: string; price: string; stock: string; url: string
+      year: string; condition: string; size: string; vin: string
+    }> = []
 
-    while (loadMoreClicks < maxClicks) {
-      const loadMoreBtn = page.locator('.loadMore_Wrapper')
-      const isVisible = await loadMoreBtn.isVisible().catch(() => false)
+    for (let start = 0; start < totalRecords; start += batchSize) {
+      console.log(`[${this.name}] Fetching batch start=${start}, limit=${batchSize}...`)
 
-      if (!isVisible) {
-        console.log(`[${this.name}] No more "Load More" button — all items loaded`)
+      const batchJson = await page.evaluate(`
+        (function() {
+          return fetch('/wp-admin/admin-ajax.php', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+              'X-Requested-With': 'XMLHttpRequest',
+            },
+            body: new URLSearchParams({
+              action: 'dealsector_filter_inventorys',
+              version: 'v2',
+              product_type: '1',
+              limit: '${batchSize}',
+              start: '${start}',
+              template_id: '143',
+              isslider: '0',
+              isRental: 'false',
+              detail_page_link: 'view-detail-page',
+              dealerLoginStatus: 'off',
+              allfields: 'modelYear,condition,lengthFtIn,widthFtIn,vin',
+              stockNo: '',
+              search: '',
+              price_sort: '',
+              price_range: '',
+              condition: '',
+              category: '',
+              make: '',
+            }).toString(),
+          })
+          .then(function(r) { return r.text(); })
+          .then(function(html) {
+            if (!html || !html.trim()) return JSON.stringify([]);
+
+            // Parse the AJAX response HTML in an isolated document
+            var parser = new DOMParser();
+            var doc = parser.parseFromString(html, 'text/html');
+            var tables = doc.querySelectorAll('.tb-details');
+            var results = [];
+
+            for (var i = 0; i < tables.length; i++) {
+              var table = tables[i];
+
+              // Extract details from table rows (Year, Condition, Size, VIN)
+              var details = {};
+              var rows = table.querySelectorAll('tr');
+              for (var r = 0; r < rows.length; r++) {
+                var th = rows[r].querySelector('th');
+                var td = rows[r].querySelector('td');
+                if (th && td) {
+                  details[th.textContent.trim().replace(':', '')] = td.textContent.trim();
+                }
+              }
+
+              // Stock # is in a <p> sibling after the table
+              var stockEl = table.parentElement
+                ? table.parentElement.querySelector('p.has-text-align-center strong')
+                : null;
+              var stockText = stockEl ? stockEl.textContent.trim() : '';
+              var stockMatch = stockText.match(/Stock\\s*#\\s*(\\S+)/);
+              var stock = stockMatch ? stockMatch[1] : '';
+
+              // Walk up to the .wp-block-columns row containing this table
+              var column = table.closest('.wp-block-column');
+              var columnsRow = column ? column.closest('.wp-block-columns') : null;
+
+              // Title and price are in the PREVIOUS .wp-block-columns sibling
+              var titleRow = columnsRow ? columnsRow.previousElementSibling : null;
+              while (titleRow && titleRow.tagName === 'HR') {
+                titleRow = titleRow.previousElementSibling;
+              }
+
+              var title = '';
+              var price = '';
+              var url = '';
+              if (titleRow) {
+                var titleLink = titleRow.querySelector('a[href*="view-detail-page"]');
+                title = titleLink ? titleLink.textContent.trim() : '';
+                url = titleLink ? titleLink.getAttribute('href') || '' : '';
+
+                var priceEl = titleRow.querySelector('.has-text-align-right strong span');
+                price = priceEl ? priceEl.textContent.trim() : '';
+              }
+
+              results.push({
+                title: title,
+                price: price,
+                stock: stock,
+                url: url,
+                year: details['Year'] || '',
+                condition: details['Condition'] || '',
+                size: details['Size'] || '',
+                vin: details['VIN'] || '',
+              });
+            }
+
+            return JSON.stringify(results);
+          })
+          .catch(function(e) {
+            return JSON.stringify({ error: e.message });
+          });
+        })()
+      `) as string
+
+      let batchItems: typeof allItems
+      try {
+        const parsed = JSON.parse(batchJson)
+        if (parsed.error) {
+          console.log(`[${this.name}] AJAX error at start=${start}: ${parsed.error}`)
+          break
+        }
+        batchItems = parsed
+      } catch {
+        console.log(`[${this.name}] Failed to parse batch response at start=${start}`)
         break
       }
 
-      await loadMoreBtn.click()
-      loadMoreClicks++
-      await this.delay(1500, 2500)
-
-      if (loadMoreClicks % 5 === 0) {
-        const currentCount = await page.locator('a[href*="view-detail-page"]').count()
-        console.log(`[${this.name}] Loaded ${currentCount} items after ${loadMoreClicks} clicks`)
+      if (batchItems.length === 0) {
+        console.log(`[${this.name}] Empty batch at start=${start}, stopping`)
+        break
       }
+
+      allItems.push(...batchItems)
+      console.log(`[${this.name}] Batch: ${batchItems.length} items, total so far: ${allItems.length}`)
+
+      // Brief delay between requests
+      await this.delay(1000, 2000)
     }
 
-    // Extract all items from the fully loaded page.
-    // Strategy: iterate .tb-details tables (one per listing), then walk
-    // to the previous sibling .wp-block-columns row for title + price.
-    const itemsJson = await page.evaluate(`
-      (function() {
-        var container = document.getElementById('dealsector_showresults');
-        if (!container) return '[]';
+    console.log(`[${this.name}] Fetched ${allItems.length} total listings via AJAX`)
 
-        var tables = container.querySelectorAll('.tb-details');
-        var results = [];
-
-        for (var i = 0; i < tables.length; i++) {
-          var table = tables[i];
-
-          // Extract details from this table (Year, Condition, Size, VIN)
-          var details = {};
-          var rows = table.querySelectorAll('tr');
-          for (var r = 0; r < rows.length; r++) {
-            var th = rows[r].querySelector('th');
-            var td = rows[r].querySelector('td');
-            if (th && td) {
-              details[th.textContent.trim().replace(':', '')] = td.textContent.trim();
-            }
-          }
-
-          // Stock # is in a <p> sibling after the table
-          var stockEl = table.parentElement.querySelector('p.has-text-align-center strong');
-          var stockText = stockEl ? stockEl.textContent.trim() : '';
-          var stockMatch = stockText.match(/Stock\\s*#\\s*(\\S+)/);
-          var stock = stockMatch ? stockMatch[1] : '';
-
-          // Walk up to the .wp-block-columns row containing this table
-          var column = table.closest('.wp-block-column');
-          var columnsRow = column ? column.closest('.wp-block-columns') : null;
-
-          // Title and price are in the PREVIOUS .wp-block-columns sibling
-          var titleRow = columnsRow ? columnsRow.previousElementSibling : null;
-          while (titleRow && titleRow.tagName === 'HR') {
-            titleRow = titleRow.previousElementSibling;
-          }
-
-          var title = '';
-          var price = '';
-          var url = '';
-          if (titleRow) {
-            var titleLink = titleRow.querySelector('a[href*="view-detail-page"]');
-            title = titleLink ? titleLink.textContent.trim() : '';
-            url = titleLink ? titleLink.getAttribute('href') || '' : '';
-
-            var priceEl = titleRow.querySelector('.has-text-align-right strong span');
-            price = priceEl ? priceEl.textContent.trim() : '';
-          }
-
-          results.push({
-            title: title,
-            price: price,
-            stock: stock,
-            url: url,
-            year: details['Year'] || '',
-            condition: details['Condition'] || '',
-            size: details['Size'] || '',
-            vin: details['VIN'] || '',
-          });
-        }
-
-        return JSON.stringify(results);
-      })()
-    `) as string
-
-    const parsed = JSON.parse(itemsJson) as Array<{
-      title: string
-      price: string
-      stock: string
-      url: string
-      year: string
-      condition: string
-      size: string
-      vin: string
-    }>
+    const parsed = allItems
 
     console.log(`[${this.name}] Extracted ${parsed.length} unique listings`)
 
@@ -181,10 +231,8 @@ export class TjsTrailersScraper extends BaseScraper {
   } {
     if (!title) return {}
 
-    // TJ's titles are often ALL CAPS
     const normalized = title.toUpperCase()
 
-    // Type detection
     const typePatterns: [RegExp, string][] = [
       [/\bUTILITY\b/i, 'Utility'],
       [/\bLANDSCAPE\b/i, 'Utility'],
@@ -207,7 +255,6 @@ export class TjsTrailersScraper extends BaseScraper {
       if (pat.test(normalized)) { type = val; break }
     }
 
-    // Make: first word or two
     const words = title.split(/\s+/).filter(Boolean)
     let make: string | undefined
     let model: string | undefined
@@ -228,7 +275,6 @@ export class TjsTrailersScraper extends BaseScraper {
     return { make, model, type }
   }
 
-  /** Extract length from size string like "40' x 102"" → "40" */
   private extractLength(size: string | undefined): string | undefined {
     if (!size) return undefined
     const match = size.match(/(\d+)'/)

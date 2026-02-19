@@ -6,6 +6,7 @@
   "scripts": {
     "scrape": "tsx src/cli.ts scrape",
     "scrape:all": "tsx src/cli.ts scrape-all",
+    "scrape:v2": "tsx src/cli-v2.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },

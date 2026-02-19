@@ -1,0 +1,15 @@
+{
+  "slug": "lbstrailer",
+  "name": "LB's Trailers",
+  "platform": "trailerfunnel",
+  "baseUrl": "https://www.lbstrailer.com",
+  "inventoryPath": "/all-inventory/",
+  "expectedMin": 200,
+  "platformConfig": {
+    "apiUrl": "https://inventory.trailerfunnel.com/api/v1/items",
+    "limit": 250,
+    "locationFilter": {
+      "location_name[0]": "127"
+    }
+  }
+}
