@@ -1,0 +1,12 @@
+{
+  "slug": "rumleytrailers",
+  "name": "Rumley Trailer Sales",
+  "platform": "trailerfunnel",
+  "baseUrl": "https://www.rumleytrailers.com",
+  "inventoryPath": "/all-inventory/",
+  "expectedMin": 220,
+  "platformConfig": {
+    "apiUrl": "https://inventory.trailerfunnel.com/api/v1/items",
+    "limit": 250
+  }
+}
