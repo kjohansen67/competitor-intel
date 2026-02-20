@@ -11,6 +11,7 @@ import type { DealerConfig, DealerMap, InventoryItem } from '../schema/inventory
 import { writeCsv } from './csv.js'
 import { buildSummary, writeSummary, type Summary } from './summary.js'
 import { saveDebugArtifacts } from './debug.js'
+import { upsertDealerAndInventory } from './supabase-upsert.js'
 
 export interface RunResult {
   dealerSlug: string
@@ -36,6 +37,7 @@ export function registerAdapter(platform: string, loader: () => Promise<{ scrape
 registerAdapter('woocommerce', () => import('../platforms/woocommerce-store-api.js'))
 registerAdapter('trailerfunnel', () => import('../platforms/trailerfunnel-api.js'))
 registerAdapter('dealsector', () => import('../platforms/dealsector-ajax.js'))
+registerAdapter('facetwp', () => import('../platforms/facetwp.js'))
 
 /**
  * Run a full scrape for one dealer.
@@ -95,6 +97,9 @@ export async function runDealer(
     writeFileSync(latestPath, timestamp + '\n', 'utf-8')
 
     console.log(`[${dealer.name}] Output written to ${outputDir}`)
+
+    // 7. Upsert to Supabase (market_intel schema)
+    await upsertDealerAndInventory(dealer, items)
 
     return {
       dealerSlug: dealer.slug,

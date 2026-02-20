@@ -1,0 +1,12 @@
+{
+  "slug": "superiortrailer",
+  "name": "Superior Trailer",
+  "platform": "trailerfunnel",
+  "baseUrl": "https://superior-trailer.com",
+  "inventoryPath": "/all-inventory/",
+  "expectedMin": 480,
+  "platformConfig": {
+    "apiUrl": "https://inventory.trailerfunnel.com/api/v1/items",
+    "limit": 600
+  }
+}

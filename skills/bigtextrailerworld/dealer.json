@@ -1,0 +1,12 @@
+{
+  "slug": "bigtextrailerworld",
+  "name": "Big Tex Trailer World - Concord NC",
+  "platform": "facetwp",
+  "baseUrl": "https://www.bigtextrailerworld.com",
+  "inventoryPath": "/inventory/",
+  "expectedMin": 50,
+  "platformConfig": {
+    "locationId": "257",
+    "template": "inventory_results"
+  }
+}

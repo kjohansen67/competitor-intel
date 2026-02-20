@@ -28,7 +28,7 @@ export interface InventoryItem {
 export interface DealerConfig {
   slug: string
   name: string
-  platform: 'woocommerce' | 'trailerfunnel' | 'dealsector' | 'dealerspike'
+  platform: 'woocommerce' | 'trailerfunnel' | 'dealsector' | 'dealerspike' | 'facetwp'
   baseUrl: string
   inventoryPath: string
   expectedMin?: number

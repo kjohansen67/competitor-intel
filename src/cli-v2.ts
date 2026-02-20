@@ -10,6 +10,7 @@
  * Runs in parallel with the existing cli.ts — no conflicts.
  */
 
+import 'dotenv/config'
 import { readdirSync, readFileSync, existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
